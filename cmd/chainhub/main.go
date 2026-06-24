@@ -23,6 +23,7 @@ import (
 	"github.com/khurafati/chainhub/internal/core"
 	"github.com/khurafati/chainhub/internal/eventbus"
 	"github.com/khurafati/chainhub/internal/monitor"
+	"github.com/khurafati/chainhub/internal/orchestrator"
 	"github.com/khurafati/chainhub/internal/plugin"
 	"github.com/khurafati/chainhub/internal/tui"
 )
@@ -73,6 +74,7 @@ func init() {
 	rootCmd.AddCommand(modeCmd)
 	rootCmd.AddCommand(resumeCmd)
 	rootCmd.AddCommand(sessionsCmd)
+	rootCmd.AddCommand(launchCmd)
 }
 
 // findConfigFile looks for a config file in multiple locations:
@@ -1049,4 +1051,85 @@ func saveToolsConfig(cfg *ToolsConfig, path string) error {
 		return err
 	}
 	return os.WriteFile(path, data, 0644)
+}
+
+// ─── launch Command ─────────────────────────────────────────────────────────
+
+var launchCmd = &cobra.Command{
+	Use:   "launch <tool>",
+	Short: "Get instructions to launch a tool in a separate terminal",
+	Args:  cobra.ExactArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		toolName := args[0]
+
+		// Load config to get workspace
+		cfg, err := core.LoadConfig(cfgPath)
+		if err != nil {
+			cfg = core.DefaultConfig()
+		}
+
+		launcher := orchestrator.NewToolLauncher(cfg.ChainHub.Workspace)
+		launcher.SetupDefaultTools()
+
+		// Also load connected tools
+		toolsCfgPath := findConfigFile(filepath.Join("configs", "tools.yaml"))
+		if toolsData, err := os.ReadFile(toolsCfgPath); err == nil {
+			var toolsList struct {
+				Tools []struct {
+					Name    string `yaml:"name"`
+					Command string `yaml:"command"`
+				} `yaml:"tools"`
+			}
+			if err := yaml.Unmarshal(toolsData, &toolsList); err == nil {
+				for _, t := range toolsList.Tools {
+					launcher.RegisterTool(&orchestrator.ExternalTool{
+						Name:    t.Name,
+						Binary:  t.Command,
+						Command: t.Command,
+					})
+				}
+			}
+		}
+
+		// Get launch instructions
+		tool, ok := launcher.GetTool(toolName)
+		if !ok {
+			return fmt.Errorf("tool %q not found. Available: %s", toolName, strings.Join(getRegisteredToolNames(launcher), ", "))
+		}
+
+		fmt.Println(cliTitle.Render(fmt.Sprintf("\n  Launch %s", tool.DisplayName)))
+		fmt.Println()
+
+		// Get terminal command
+		if termCmd, err := launcher.LaunchInTerminal(toolName, ""); err == nil {
+			fmt.Println(cliInfo.Render("  Quick launch (copy & paste):"))
+			fmt.Println()
+			fmt.Printf("  %s\n", cliSuccess.Render(termCmd))
+			fmt.Println()
+		}
+
+		// Manual instructions
+		fmt.Println(cliInfo.Render("  Manual launch:"))
+		workDir := cfg.ChainHub.Workspace
+		if tool.WorkDir != "" {
+			workDir = tool.WorkDir
+		}
+		fmt.Printf("  %s\n", cliDim.Render(fmt.Sprintf("cd %s", workDir)))
+		fmt.Printf("  %s\n", cliSuccess.Render(tool.Binary))
+		fmt.Println()
+
+		fmt.Println(cliDim.Render("  The tool will read tasks from .chainhub/tasks/"))
+		fmt.Println(cliDim.Render("  and write results back to the same directory."))
+		fmt.Println()
+
+		return nil
+	},
+}
+
+func getRegisteredToolNames(launcher *orchestrator.ToolLauncher) []string {
+	var names []string
+	for _, tool := range launcher.ListTools() {
+		names = append(names, tool.Name)
+	}
+	return names
 }
