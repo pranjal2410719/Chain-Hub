@@ -7,7 +7,6 @@ import (
 	"github.com/charmbracelet/lipgloss"
 )
 
-// renderInputOverlay renders a prompt overlay on top of the current view.
 func (m AppModel) renderInputOverlay(baseView string) string {
 	if m.pendingPrompt == nil {
 		return baseView
@@ -15,16 +14,12 @@ func (m AppModel) renderInputOverlay(baseView string) string {
 
 	var b strings.Builder
 
-	// Title bar
-	title := HeaderStyle.Render("  Tool Needs Input")
-	b.WriteString(title)
+	b.WriteString(HeaderStyle.Render("  Tool Needs Input"))
 	b.WriteString("\n\n")
 
-	// Tool name and prompt
 	tool := BoldTextStyle.Render(m.pendingPrompt.Tool)
 	b.WriteString(fmt.Sprintf("  Tool: %s\n\n", tool))
 
-	// Prompt text - wrap long lines
 	prompt := m.pendingPrompt.Prompt
 	maxWidth := m.width - 20
 	if len(prompt) > maxWidth {
@@ -51,29 +46,26 @@ func (m AppModel) renderInputOverlay(baseView string) string {
 
 	b.WriteString("\n")
 
-	// Input area or quick actions
 	if m.inputMode {
 		b.WriteString(StatusActiveStyle.Render("  > "))
 		b.WriteString(m.inputBuffer)
 		b.WriteString("_")
 		b.WriteString("\n\n")
-		b.WriteString(DimTextStyle.Render("  enter: send  |  escape: cancel"))
+		b.WriteString(DimTextStyle.Render("  enter: send  |  esc: cancel"))
 	} else {
-		b.WriteString("  Quick actions:\n")
+		b.WriteString("  Actions:\n")
 		b.WriteString(fmt.Sprintf("    %s  Accept (y)\n", StatusActiveStyle.Render("[y]")))
-		b.WriteString(fmt.Sprintf("    %s  Reject (escape)\n", StatusErrorStyle.Render("[esc]")))
-		b.WriteString(fmt.Sprintf("    %s  Type custom response\n", StatusWatchingStyle.Render("[i]")))
-		b.WriteString(fmt.Sprintf("    %s  Toggle autopilot\n", StatusActiveStyle.Render("[a]")))
+		b.WriteString(fmt.Sprintf("    %s  Reject (esc)\n", StatusErrorStyle.Render("[esc]")))
+		b.WriteString(fmt.Sprintf("    %s  Custom input (i)\n", StatusWatchingStyle.Render("[i]")))
+		b.WriteString(fmt.Sprintf("    %s  Toggle autopilot (a)\n", StatusActiveStyle.Render("[a]")))
 	}
 
-	// Autopilot status
 	if m.autopilotMode {
 		b.WriteString("\n")
 		b.WriteString(WarningTextStyle.Render("  AUTOPILOT ON"))
-		b.WriteString(DimTextStyle.Render(" - Tool will auto-respond to prompts"))
+		b.WriteString(DimTextStyle.Render(" - auto-responding"))
 	}
 
-	// Panel
 	w := m.width - 4
 	if w < 40 {
 		w = 40

@@ -169,7 +169,7 @@ func (m AppModel) wrapPipelinePanel(content string) string {
 
 	tabs := m.renderTabBar()
 	footer := FooterStyle.Width(m.width).Render(
-		"  q quit • tab switch view • space/n next phase • 1-3 jump to tab",
+		"  q quit  \u2022  tab switch  \u2022  space next  \u2022  a autopilot  \u2022  1-4 tabs",
 	)
 
 	return lipgloss.JoinVertical(lipgloss.Left, tabs, panel, footer)
