@@ -1,0 +1,28 @@
+chainhub:
+    version: 1.0.0
+    workspace: .chainhub
+    log_level: info
+    pipeline:
+        default_phases:
+            - planning
+            - research
+            - implementation
+            - scanning
+            - testing
+        feedback_loops: true
+        max_concurrent_tools: 3
+        mode: auto
+        phase_assignments:
+            planning: mimo-code
+    monitor:
+        interval: 5s
+        alerts:
+            cpu_threshold: 85
+            memory_threshold: 80
+            disk_threshold: 90
+    event_bus:
+        type: memory
+        buffer_size: 100
+    context:
+        share_method: file
+        reports_dir: reports

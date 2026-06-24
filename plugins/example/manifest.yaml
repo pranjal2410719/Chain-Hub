@@ -1,0 +1,38 @@
+# Example ChainHub Plugin — Code Reviewer
+#
+# Place this file as `manifest.yaml` inside a plugin directory under
+# one of the configured plugin search paths.  ChainHub will discover it
+# automatically and make the tool available for orchestration.
+
+name: code-reviewer
+display_name: "Code Reviewer"
+version: "1.0.0"
+command: code-reviewer
+
+# Broad functional categories.
+specialty:
+  - review
+  - coding
+
+# Fine-grained capabilities (map to adapter.ToolCapability values).
+capabilities:
+  - review
+  - coding
+
+args:
+  - "--format"
+  - "json"
+
+priority: medium
+
+health_check:
+  command: "code-reviewer --version"
+  interval: "60s"
+
+resource_limits:
+  max_cpu_percent: 50
+  max_memory_mb: 512
+
+env:
+  REVIEWER_MODE: "strict"
+  REVIEWER_OUTPUT: "markdown"

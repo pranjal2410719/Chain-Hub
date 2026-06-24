@@ -1,0 +1,96 @@
+# ChainHub Tool Definitions
+# Each tool represents an AI-powered CLI assistant that ChainHub can orchestrate.
+# Tools are assigned to pipeline phases based on their specialties.
+
+tools:
+  - name: "claude-code"
+    display_name: "Claude Code"
+    description: "Anthropic's agentic coding assistant with deep reasoning capabilities."
+    command: "claude"
+    args:
+      - "--dangerously-skip-permissions"
+    specialties:
+      - implementation
+      - research
+      - planning
+    supported_phases:
+      - planning
+      - research
+      - implementation
+      - testing
+    health_check:
+      command: "claude"
+      args: ["--version"]
+    priority: 1
+    enabled: true
+
+  - name: "antigravity"
+    display_name: "Antigravity (Gemini CLI)"
+    description: "Google's Gemini-powered coding agent with advanced tool use and multi-step reasoning."
+    command: "agy"
+    args: []
+    specialties:
+      - research
+      - planning
+      - scanning
+    supported_phases:
+      - planning
+      - research
+      - scanning
+      - testing
+    health_check:
+      command: "agy"
+      args: ["--version"]
+    priority: 2
+    enabled: true
+
+  - name: "mimo-code"
+    display_name: "Mimo Code"
+    description: "Xiaomi's AI coding assistant optimised for fast implementation and code generation."
+    command: "mimo"
+    args: []
+    specialties:
+      - implementation
+      - scanning
+    supported_phases:
+      - implementation
+      - scanning
+    health_check:
+      command: "mimo"
+      args: ["--version"]
+    priority: 3
+    enabled: true
+
+  - name: "opencode"
+    display_name: "OpenCode"
+    description: "Open-source AI coding assistant with broad language support and local model capabilities."
+    command: "opencode"
+    args: []
+    specialties:
+      - implementation
+      - testing
+    supported_phases:
+      - implementation
+      - testing
+    health_check:
+      command: "opencode"
+      args: ["--version"]
+    priority: 4
+    enabled: true
+
+  - name: "freebuff"
+    display_name: "FreeBuff"
+    description: "Security-focused AI assistant specialising in vulnerability scanning and code auditing."
+    command: "freebuff"
+    args: []
+    specialties:
+      - scanning
+      - testing
+    supported_phases:
+      - scanning
+      - testing
+    health_check:
+      command: "freebuff"
+      args: ["--version"]
+    priority: 5
+    enabled: true
