@@ -293,11 +293,12 @@ func (m AppModel) renderEventsPanel(width int) string {
 func (m AppModel) renderFooter() string {
 	keys := []string{
 		"q: quit",
-		"tab: switch view",
-		"space/n: next phase",
-		"1: dashboard",
-		"2: pipeline",
-		"3: logs",
+		"tab: views",
+		"space: next",
+		"a: autopilot",
 	}
-	return FooterStyle.Width(m.width).Render("  " + strings.Join(keys, "  •  "))
+	if m.pendingPrompt != nil {
+		keys = append(keys, "y: accept", "i: type", "esc: reject")
+	}
+		return FooterStyle.Width(m.width).Render("  " + strings.Join(keys, "  •  "))
 }

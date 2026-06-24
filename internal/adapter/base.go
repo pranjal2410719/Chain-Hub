@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -30,13 +31,14 @@ type BaseAdapter struct {
 	outputCh chan string
 	errorCh  chan string
 
-	bus    *eventbus.EventBus
-	sub    *eventbus.Subscriber
-	ctx    context.Context
-	cancel context.CancelFunc
-	mu     sync.RWMutex
-	alive  bool
-	exitCh chan struct{}
+	bus       *eventbus.EventBus
+	sub       *eventbus.Subscriber
+	ctx       context.Context
+	cancel    context.CancelFunc
+	mu        sync.RWMutex
+	alive     bool
+	exitCh    chan struct{}
+	autopilot bool
 }
 
 // NewBaseAdapter creates a BaseAdapter pre-populated with the given ToolInfo.
@@ -286,6 +288,26 @@ func (b *BaseAdapter) SetEventBus(bus *eventbus.EventBus) {
 	b.bus = bus
 }
 
+// SetAutopilot enables or disables autopilot mode for this adapter.
+// In autopilot mode, the adapter auto-responds to common prompts.
+func (b *BaseAdapter) SetAutopilot(enabled bool) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.autopilot = enabled
+}
+
+// IsAutopilot returns whether autopilot mode is enabled.
+func (b *BaseAdapter) IsAutopilot() bool {
+	b.mu.RLock()
+	defer b.mu.RUnlock()
+	return b.autopilot
+}
+
+// RespondToPrompt sends a response to the tool's stdin for a pending prompt.
+func (b *BaseAdapter) RespondToPrompt(response string) error {
+	return b.SendInput(response)
+}
+
 // listenToBusEvents reads events from the subscription channel in a loop and calls OnEvent.
 func (b *BaseAdapter) listenToBusEvents() {
 	b.mu.RLock()
@@ -400,13 +422,11 @@ func (b *BaseAdapter) setStatusLocked(status ToolStatus, text string) {
 // When the event bus is set it also publishes events of the given type.
 func (b *BaseAdapter) readStream(r io.ReadCloser, ch chan<- string, evtType eventbus.EventType) {
 	scanner := bufio.NewScanner(r)
-	// Allow lines up to 1 MB.
 	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
 
 	for scanner.Scan() {
 		line := scanner.Text()
 
-		// Non-blocking send – drop lines if the consumer can't keep up.
 		select {
 		case ch <- line:
 		default:
@@ -415,6 +435,7 @@ func (b *BaseAdapter) readStream(r io.ReadCloser, ch chan<- string, evtType even
 		b.mu.RLock()
 		bus := b.bus
 		name := b.info.Name
+		autopilot := b.autopilot
 		b.mu.RUnlock()
 
 		if bus != nil {
@@ -426,8 +447,49 @@ func (b *BaseAdapter) readStream(r io.ReadCloser, ch chan<- string, evtType even
 					"line": line,
 				},
 			))
+
+			// Detect tool prompts asking for user input
+			if evtType == eventbus.EventToolOutput && isToolPrompt(line) {
+				bus.Publish(eventbus.NewEvent(
+					eventbus.EventInputNeeded,
+					name,
+					map[string]interface{}{
+						"tool":     name,
+						"prompt":   line,
+						"autopilot": autopilot,
+					},
+				))
+			}
 		}
 	}
+}
+
+// isToolPrompt detects common tool prompts asking for user input.
+func isToolPrompt(line string) bool {
+	lower := strings.ToLower(strings.TrimSpace(line))
+	prompts := []string{
+		"yes, i trust",
+		"no, exit",
+		"do you want",
+		"press enter",
+		"continue?",
+		"proceed?",
+		"allow",
+		"confirm",
+		"accept",
+		"reject",
+		"[y/n]",
+		"[yes/no]",
+		"y/n",
+		"permission",
+		"authorize",
+	}
+	for _, p := range prompts {
+		if strings.Contains(lower, p) {
+			return true
+		}
+	}
+	return false
 }
 
 // cleanupLocked performs event bus and context cleanup. MUST be called with b.mu held.

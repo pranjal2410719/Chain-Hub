@@ -24,6 +24,8 @@ const (
 	EventReviewRequested EventType = "review.requested"
 	// EventInputNeeded is emitted when user input is required to proceed.
 	EventInputNeeded EventType = "input.needed"
+	// EventInputResponse is emitted when user provides input in response to a prompt.
+	EventInputResponse EventType = "input.response"
 	// EventSystemAlert is emitted for system-level alerts (resource usage, errors).
 	EventSystemAlert EventType = "system.alert"
 	// EventToolOutput is emitted when a tool produces output.
@@ -36,6 +38,8 @@ const (
 	EventPipelinePhaseChanged EventType = "pipeline.phase_changed"
 	// EventUserNotification is emitted to surface information to the user.
 	EventUserNotification EventType = "user.notification"
+	// EventAutopilotToggle is emitted when autopilot mode is toggled.
+	EventAutopilotToggle EventType = "autopilot.toggle"
 )
 
 // Event represents a single occurrence within the ChainHub system. Events carry

@@ -42,8 +42,21 @@ type AppModel struct {
 	quitting  bool
 
 	// Terminal view state
-	terminalTools     map[string][]ToolOutput
+	terminalTools       map[string][]ToolOutput
 	selectedTerminalTool string
+
+	// Input prompt state
+	pendingPrompt  *PendingPrompt
+	inputMode      bool
+	inputBuffer    string
+	autopilotMode  bool
+}
+
+// PendingPrompt represents a tool waiting for user input.
+type PendingPrompt struct {
+	Tool   string
+	Prompt string
+	Event  eventbus.Event
 }
 
 // NewApp creates a new AppModel wired to the provided engine, adapter registry,
@@ -81,6 +94,36 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	// ── Keyboard ────────────────────────────────────────────────────
 	case tea.KeyMsg:
+		// Handle input mode first
+		if m.inputMode {
+			switch msg.String() {
+			case "enter":
+				if m.inputBuffer != "" {
+					m.sendInputResponse(m.inputBuffer)
+				}
+				m.inputBuffer = ""
+				m.inputMode = false
+				m.pendingPrompt = nil
+				return m, nil
+			case "escape":
+				m.inputBuffer = ""
+				m.inputMode = false
+				m.pendingPrompt = nil
+				return m, nil
+			case "backspace":
+				if len(m.inputBuffer) > 0 {
+					m.inputBuffer = m.inputBuffer[:len(m.inputBuffer)-1]
+				}
+				return m, nil
+			default:
+				if len(msg.String()) == 1 {
+					m.inputBuffer += msg.String()
+				}
+				return m, nil
+			}
+		}
+
+		// Normal mode
 		switch msg.String() {
 		case "q", "ctrl+c":
 			m.quitting = true
@@ -105,6 +148,32 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if m.activeTab == 3 {
 				m.cycleTerminalTool(1)
 			}
+		case "a":
+			// Toggle autopilot mode
+			m.autopilotMode = !m.autopilotMode
+			m.toggleAutopilot()
+			return m, nil
+		case "i":
+			// Enter input mode if there's a pending prompt
+			if m.pendingPrompt != nil {
+				m.inputMode = true
+				m.inputBuffer = ""
+				return m, nil
+			}
+		case "y":
+			// Quick accept
+			if m.pendingPrompt != nil {
+				m.sendInputResponse("y")
+				m.pendingPrompt = nil
+				return m, nil
+			}
+		case "escape":
+			// Quick reject
+			if m.pendingPrompt != nil {
+				m.sendInputResponse("n")
+				m.pendingPrompt = nil
+				return m, nil
+			}
 		}
 
 	// ── Terminal resize ─────────────────────────────────────────────
@@ -127,7 +196,30 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	// ── EventBus event ──────────────────────────────────────────────
 	case eventMsg:
 		ev := eventbus.Event(msg)
+
+		// Handle input needed event
+		if ev.Type == eventbus.EventInputNeeded {
+			tool, _ := ev.Payload["tool"].(string)
+			prompt, _ := ev.Payload["prompt"].(string)
+			m.pendingPrompt = &PendingPrompt{
+				Tool:   tool,
+				Prompt: prompt,
+				Event:  ev,
+			}
+			// Auto-respond if autopilot is on
+			if m.autopilotMode {
+				m.sendInputResponse("y")
+				m.pendingPrompt = nil
+			}
+		}
+
+		// Cap events list
+		if len(m.events) > 200 {
+			m.events = m.events[len(m.events)-200:]
+		}
 		m.events = append(m.events, ev)
+
+		const maxTerminalLines = 500
 
 		// Capture tool output for terminal view
 		switch ev.Type {
@@ -177,19 +269,27 @@ func (m AppModel) View() string {
 		return lipgloss.NewStyle().
 			Foreground(ColorPrimary).
 			Bold(true).
-			Render("\n  👋 ChainHub shutting down…\n\n")
+			Render("\n  ChainHub shutting down...\n\n")
 	}
 
+	var view string
 	switch m.activeTab {
 	case 1:
-		return m.renderPipelineView()
+		view = m.renderPipelineView()
 	case 2:
-		return m.renderLogView()
+		view = m.renderLogView()
 	case 3:
-		return m.renderTerminalView()
+		view = m.renderTerminalView()
 	default:
-		return m.renderDashboard()
+		view = m.renderDashboard()
 	}
+
+	// Append input prompt overlay if there's a pending prompt
+	if m.pendingPrompt != nil || m.inputMode {
+		view = m.renderInputOverlay(view)
+	}
+
+	return view
 }
 
 // ─── Tab Bar ────────────────────────────────────────────────────────────────
@@ -269,4 +369,42 @@ func (m *AppModel) cycleTerminalTool(direction int) {
 	// Cycle
 	newIdx := (currentIdx + direction + len(names)) % len(names)
 	m.selectedTerminalTool = names[newIdx]
+}
+
+// sendInputResponse sends a response to the pending tool prompt.
+func (m *AppModel) sendInputResponse(response string) {
+	if m.pendingPrompt == nil {
+		return
+	}
+
+	toolName := m.pendingPrompt.Tool
+	if a, err := m.registry.Get(toolName); err == nil {
+		if adapter, ok := a.(interface{ RespondToPrompt(string) error }); ok {
+			_ = adapter.RespondToPrompt(response)
+		}
+	}
+
+	// Log the response
+	m.events = append(m.events, eventbus.Event{
+		Type:      eventbus.EventInputResponse,
+		Source:    "user",
+		Payload:   map[string]interface{}{"tool": toolName, "response": response},
+		Timestamp: time.Now(),
+	})
+}
+
+// toggleAutopilot toggles autopilot mode on all registered tools.
+func (m *AppModel) toggleAutopilot() {
+	for _, a := range m.registry.List() {
+		if adapter, ok := a.(interface{ SetAutopilot(bool) }); ok {
+			adapter.SetAutopilot(m.autopilotMode)
+		}
+	}
+
+	m.events = append(m.events, eventbus.Event{
+		Type:      eventbus.EventAutopilotToggle,
+		Source:    "user",
+		Payload:   map[string]interface{}{"enabled": m.autopilotMode},
+		Timestamp: time.Now(),
+	})
 }
