@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"os"
 	"os/exec"
 	"sync"
 	"syscall"
@@ -35,6 +36,7 @@ type BaseAdapter struct {
 	cancel context.CancelFunc
 	mu     sync.RWMutex
 	alive  bool
+	exitCh chan struct{}
 }
 
 // NewBaseAdapter creates a BaseAdapter pre-populated with the given ToolInfo.
@@ -118,6 +120,13 @@ func (b *BaseAdapter) Start(ctx context.Context) error {
 	b.ctx, b.cancel = context.WithCancel(ctx)
 
 	b.cmd = exec.CommandContext(b.ctx, b.info.Command, b.info.Args...)
+	if len(b.info.Env) > 0 {
+		b.cmd.Env = os.Environ()
+		for k, v := range b.info.Env {
+			b.cmd.Env = append(b.cmd.Env, fmt.Sprintf("%s=%s", k, v))
+		}
+	}
+	b.exitCh = make(chan struct{})
 
 	var err error
 	b.stdin, err = b.cmd.StdinPipe()
@@ -163,16 +172,11 @@ func (b *BaseAdapter) Start(ctx context.Context) error {
 // waits up to 5 seconds before force-killing.
 func (b *BaseAdapter) Stop() error {
 	b.mu.Lock()
-	defer b.mu.Unlock()
 
-	// Unsubscribe from event bus if set.
-	if b.bus != nil && b.sub != nil {
-		b.bus.Unsubscribe(b.sub.ID)
-		b.sub = nil
-	}
-
-	if b.cmd == nil || b.cmd.Process == nil {
+	if b.cmd == nil || b.cmd.Process == nil || !b.alive {
 		b.setStatusLocked(ToolStatusStopped, "stopped (no process)")
+		b.cleanupLocked()
+		b.mu.Unlock()
 		return nil
 	}
 
@@ -182,31 +186,27 @@ func (b *BaseAdapter) Stop() error {
 	}
 
 	// Send SIGTERM.
-	if err := b.cmd.Process.Signal(syscall.SIGTERM); err != nil {
-		// Process may have already exited – that's fine.
-		b.setStatusLocked(ToolStatusStopped, "stopped")
-		return nil
-	}
+	_ = b.cmd.Process.Signal(syscall.SIGTERM)
 
-	// Wait with timeout.
-	done := make(chan error, 1)
-	go func() { done <- b.cmd.Wait() }()
+	exitCh := b.exitCh
+	b.mu.Unlock()
 
 	select {
-	case <-done:
+	case <-exitCh:
 		// Exited gracefully.
 	case <-time.After(5 * time.Second):
-		// Force kill.
-		_ = b.cmd.Process.Kill()
-		<-done
+		b.mu.Lock()
+		if b.cmd != nil && b.cmd.Process != nil && b.alive {
+			_ = b.cmd.Process.Kill()
+		}
+		b.mu.Unlock()
+		<-exitCh
 	}
 
-	b.alive = false
+	b.mu.Lock()
 	b.setStatusLocked(ToolStatusStopped, "stopped")
-
-	if b.cancel != nil {
-		b.cancel()
-	}
+	b.cleanupLocked()
+	b.mu.Unlock()
 
 	return nil
 }
@@ -430,6 +430,18 @@ func (b *BaseAdapter) readStream(r io.ReadCloser, ch chan<- string, evtType even
 	}
 }
 
+// cleanupLocked performs event bus and context cleanup. MUST be called with b.mu held.
+func (b *BaseAdapter) cleanupLocked() {
+	if b.bus != nil && b.sub != nil {
+		b.bus.Unsubscribe(b.sub.ID)
+		b.sub = nil
+	}
+	if b.cancel != nil {
+		b.cancel()
+		b.cancel = nil
+	}
+}
+
 // waitForExit waits for the process to exit and updates the adapter state.
 func (b *BaseAdapter) waitForExit() {
 	if b.cmd == nil {
@@ -445,5 +457,13 @@ func (b *BaseAdapter) waitForExit() {
 		b.setStatusLocked(ToolStatusError, fmt.Sprintf("exited with error: %v", err))
 	} else {
 		b.setStatusLocked(ToolStatusStopped, "exited normally")
+	}
+	b.cleanupLocked()
+	if b.exitCh != nil {
+		select {
+		case <-b.exitCh:
+		default:
+			close(b.exitCh)
+		}
 	}
 }

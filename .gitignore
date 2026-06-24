@@ -1,0 +1,42 @@
+# Binaries
+build/
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+
+# Test binary
+*.test
+
+# Output
+*.out
+*.prof
+
+# Dependency directories
+vendor/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# ChainHub workspace
+.chainhub/
+
+# Project context files
+.project-context.json
+.project-context.md
+.project_brain/
+
+# Internal chainhub
+internal/core/.chainhub/
+
+# Environment
+.env
+.env.local

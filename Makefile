@@ -2,7 +2,7 @@
 # ChainHub — Multi-AI CLI Orchestrator
 # ─────────────────────────────────────────────────────────────────────────────
 
-.PHONY: build run clean test install fmt lint help mod dev docker
+.PHONY: build run clean test install install-local fmt lint help mod dev docker fast
 
 APP_NAME   := chainhub
 BUILD_DIR  := ./build
@@ -12,6 +12,7 @@ GIT_COMMIT := $(shell git rev-parse --short HEAD 2>/dev/null || echo "unknown")
 BUILD_TIME := $(shell date -u '+%Y-%m-%dT%H:%M:%SZ')
 GO         := go
 LDFLAGS    := -ldflags "-X main.Version=$(VERSION) -X main.GitCommit=$(GIT_COMMIT) -X main.BuildTime=$(BUILD_TIME)"
+LOCAL_BIN  := $(HOME)/.local/bin
 
 # ─── Targets ─────────────────────────────────────────────────────────────────
 
@@ -82,3 +83,18 @@ init-workspace: ## Initialize a sample ChainHub workspace
 
 version: ## Print version information
 	@echo "$(APP_NAME) v$(VERSION) ($(GIT_COMMIT)) built $(BUILD_TIME)"
+
+fast: ## Fast build (no ldflags) + install to ~/.local/bin
+	@echo "⚡ Fast build..."
+	@mkdir -p $(BUILD_DIR) $(LOCAL_BIN)
+	$(GO) build -o $(BUILD_DIR)/$(APP_NAME) $(MAIN_PATH)
+	@rm -f $(LOCAL_BIN)/$(APP_NAME)
+	@cp $(BUILD_DIR)/$(APP_NAME) $(LOCAL_BIN)/$(APP_NAME)
+	@echo "✅ Installed to $(LOCAL_BIN)/$(APP_NAME)"
+
+install-local: build ## Build and install to ~/.local/bin
+	@mkdir -p $(LOCAL_BIN)
+	@rm -f $(LOCAL_BIN)/$(APP_NAME)
+	@cp $(BUILD_DIR)/$(APP_NAME) $(LOCAL_BIN)/$(APP_NAME)
+	@echo "✅ Installed to $(LOCAL_BIN)/$(APP_NAME)"
+	@echo "   Run: $(APP_NAME) --help"

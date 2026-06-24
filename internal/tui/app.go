@@ -37,9 +37,13 @@ type AppModel struct {
 	width  int
 	height int
 
-	activeTab int // 0 = dashboard, 1 = pipeline, 2 = logs
+	activeTab int // 0 = dashboard, 1 = pipeline, 2 = logs, 3 = terminal
 	logLines  []string
 	quitting  bool
+
+	// Terminal view state
+	terminalTools     map[string][]ToolOutput
+	selectedTerminalTool string
 }
 
 // NewApp creates a new AppModel wired to the provided engine, adapter registry,
@@ -55,6 +59,7 @@ func NewApp(engine *core.Engine, registry *adapter.Registry, mon *monitor.System
 		logLines: make([]string, 0, 256),
 		width:    120,
 		height:   40,
+		terminalTools: make(map[string][]ToolOutput),
 	}
 }
 
@@ -81,15 +86,25 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.quitting = true
 			return m, tea.Quit
 		case "tab":
-			m.activeTab = (m.activeTab + 1) % 3
+			m.activeTab = (m.activeTab + 1) % 4
 		case "1":
 			m.activeTab = 0
 		case "2":
 			m.activeTab = 1
 		case "3":
 			m.activeTab = 2
+		case "4":
+			m.activeTab = 3
 		case "n", " ":
 			_ = m.engine.AdvancePipeline()
+		case "left", "h":
+			if m.activeTab == 3 {
+				m.cycleTerminalTool(-1)
+			}
+		case "right", "l":
+			if m.activeTab == 3 {
+				m.cycleTerminalTool(1)
+			}
 		}
 
 	// ── Terminal resize ─────────────────────────────────────────────
@@ -111,7 +126,45 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	// ── EventBus event ──────────────────────────────────────────────
 	case eventMsg:
-		m.events = append(m.events, eventbus.Event(msg))
+		ev := eventbus.Event(msg)
+		m.events = append(m.events, ev)
+
+		// Capture tool output for terminal view
+		switch ev.Type {
+		case eventbus.EventToolOutput:
+			if tool, ok := ev.Payload["tool"].(string); ok {
+				if line, ok := ev.Payload["line"].(string); ok {
+					m.terminalTools[tool] = append(m.terminalTools[tool], ToolOutput{
+						Tool:  tool,
+						Line:  line,
+						IsErr: false,
+					})
+					if m.selectedTerminalTool == "" {
+						m.selectedTerminalTool = tool
+					}
+				}
+			}
+		case eventbus.EventToolError:
+			if tool, ok := ev.Payload["tool"].(string); ok {
+				if line, ok := ev.Payload["line"].(string); ok {
+					m.terminalTools[tool] = append(m.terminalTools[tool], ToolOutput{
+						Tool:  tool,
+						Line:  line,
+						IsErr: true,
+					})
+				}
+			}
+		case eventbus.EventToolStatusChanged:
+			if tool, ok := ev.Payload["tool"].(string); ok {
+				if _, exists := m.terminalTools[tool]; !exists {
+					m.terminalTools[tool] = make([]ToolOutput, 0)
+					if m.selectedTerminalTool == "" {
+						m.selectedTerminalTool = tool
+					}
+				}
+			}
+		}
+
 		return m, listenForEvents(m.eventSub)
 	}
 
@@ -132,6 +185,8 @@ func (m AppModel) View() string {
 		return m.renderPipelineView()
 	case 2:
 		return m.renderLogView()
+	case 3:
+		return m.renderTerminalView()
 	default:
 		return m.renderDashboard()
 	}
@@ -141,7 +196,7 @@ func (m AppModel) View() string {
 
 // renderTabBar renders the horizontal tab selector.
 func (m AppModel) renderTabBar() string {
-	tabs := []string{"Dashboard", "Pipeline", "Logs"}
+	tabs := []string{"Dashboard", "Pipeline", "Logs", "Terminal"}
 	rendered := make([]string, len(tabs))
 	for i, t := range tabs {
 		if i == m.activeTab {
@@ -169,7 +224,10 @@ func tickCmd() tea.Cmd {
 // event into an eventMsg for the Update loop.
 func listenForEvents(sub *eventbus.Subscriber) tea.Cmd {
 	return func() tea.Msg {
-		ev := <-sub.Channel
+		ev, ok := <-sub.Channel
+		if !ok {
+			return nil
+		}
 		return eventMsg(ev)
 	}
 }
@@ -185,4 +243,30 @@ func truncate(s string, maxLen int) string {
 		return s[:maxLen]
 	}
 	return s[:maxLen-1] + "…"
+}
+
+// cycleTerminalTool switches to the next/previous tool in the terminal view.
+func (m *AppModel) cycleTerminalTool(direction int) {
+	if len(m.terminalTools) == 0 {
+		return
+	}
+
+	// Get sorted tool names
+	names := make([]string, 0, len(m.terminalTools))
+	for name := range m.terminalTools {
+		names = append(names, name)
+	}
+
+	// Find current index
+	currentIdx := 0
+	for i, name := range names {
+		if name == m.selectedTerminalTool {
+			currentIdx = i
+			break
+		}
+	}
+
+	// Cycle
+	newIdx := (currentIdx + direction + len(names)) % len(names)
+	m.selectedTerminalTool = names[newIdx]
 }

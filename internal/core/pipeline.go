@@ -1,7 +1,10 @@
 package core
 
 import (
+	"encoding/json"
 	"fmt"
+	"os"
+	"path/filepath"
 	"time"
 
 	"github.com/google/uuid"
@@ -243,4 +246,86 @@ func (p *Pipeline) GetPhase(phase PipelinePhase) *PhaseConfig {
 		}
 	}
 	return nil
+}
+
+// Save persists the pipeline state to a JSON file in the session directory.
+func (p *Pipeline) Save(workspaceDir string) error {
+	sessionDir := filepath.Join(workspaceDir, ".chainhub", "sessions")
+	if err := os.MkdirAll(sessionDir, 0755); err != nil {
+		return fmt.Errorf("creating session dir: %w", err)
+	}
+
+	data, err := json.MarshalIndent(p, "", "  ")
+	if err != nil {
+		return fmt.Errorf("marshalling pipeline: %w", err)
+	}
+
+	path := filepath.Join(sessionDir, p.ID+".json")
+	if err := os.WriteFile(path, data, 0644); err != nil {
+		return fmt.Errorf("writing session file: %w", err)
+	}
+
+	// Also save as "latest.json" for easy resume
+	latestPath := filepath.Join(sessionDir, "latest.json")
+	if err := os.WriteFile(latestPath, data, 0644); err != nil {
+		return fmt.Errorf("writing latest session: %w", err)
+	}
+
+	return nil
+}
+
+// LoadPipeline loads a pipeline state from a JSON file.
+func LoadPipeline(path string) (*Pipeline, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("reading session file: %w", err)
+	}
+
+	var p Pipeline
+	if err := json.Unmarshal(data, &p); err != nil {
+		return nil, fmt.Errorf("unmarshalling pipeline: %w", err)
+	}
+
+	return &p, nil
+}
+
+// LoadLatestPipeline loads the most recent pipeline session from the workspace.
+func LoadLatestPipeline(workspaceDir string) (*Pipeline, error) {
+	sessionDir := filepath.Join(workspaceDir, ".chainhub", "sessions")
+	latestPath := filepath.Join(sessionDir, "latest.json")
+
+	if _, err := os.Stat(latestPath); os.IsNotExist(err) {
+		return nil, fmt.Errorf("no session found")
+	}
+
+	return LoadPipeline(latestPath)
+}
+
+// ListSessions returns all saved pipeline sessions in the workspace.
+func ListSessions(workspaceDir string) ([]Pipeline, error) {
+	sessionDir := filepath.Join(workspaceDir, ".chainhub", "sessions")
+
+	entries, err := os.ReadDir(sessionDir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("reading session dir: %w", err)
+	}
+
+	var sessions []Pipeline
+	for _, entry := range entries {
+		if entry.IsDir() || entry.Name() == "latest.json" {
+			continue
+		}
+
+		path := filepath.Join(sessionDir, entry.Name())
+		p, err := LoadPipeline(path)
+		if err != nil {
+			continue
+		}
+		sessions = append(sessions, *p)
+	}
+
+	return sessions, nil
 }

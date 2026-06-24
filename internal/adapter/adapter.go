@@ -83,6 +83,8 @@ type ToolInfo struct {
 	Priority string `json:"priority" yaml:"priority"`
 	// StatusText is a short human-readable status description.
 	StatusText string `json:"status_text"`
+	// Env holds environment variables for the tool process.
+	Env map[string]string `json:"env" yaml:"env"`
 }
 
 // ---------------------------------------------------------------------------

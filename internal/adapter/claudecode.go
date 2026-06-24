@@ -1,7 +1,6 @@
 package adapter
 
 import (
-	"context"
 	"fmt"
 
 	"github.com/khurafati/chainhub/internal/eventbus"
@@ -17,12 +16,16 @@ type ClaudeCodeAdapter struct {
 // NewClaudeCodeAdapter creates a ClaudeCodeAdapter configured with sensible
 // defaults for Claude Code.
 func NewClaudeCodeAdapter() *ClaudeCodeAdapter {
+	systemPrompt := "You are part of ChainHub, a multi-AI CLI orchestrator. " +
+		"Collaborate with other tools, follow task assignments precisely, " +
+		"and report your results clearly. Focus on the task at hand and " +
+		"produce high-quality, production-ready code."
 	info := ToolInfo{
 		Name:        "claude-code",
 		DisplayName: "Claude Code",
 		Specialties: []ToolCapability{CapCoding, CapDebugging, CapRefactoring, CapReview},
 		Command:     "claude",
-		Args:        []string{"--dangerously-skip-permissions"},
+		Args:        []string{"-p", systemPrompt, "--dangerously-skip-permissions"},
 		Priority:    "high",
 	}
 	return &ClaudeCodeAdapter{
@@ -30,25 +33,19 @@ func NewClaudeCodeAdapter() *ClaudeCodeAdapter {
 	}
 }
 
-// Start overrides BaseAdapter.Start to inject the `-p` flag with a ChainHub
-// system prompt before launching the process.
-func (c *ClaudeCodeAdapter) Start(ctx context.Context) error {
-	c.mu.Lock()
-	systemPrompt := "You are part of ChainHub, a multi-AI CLI orchestrator. " +
-		"Collaborate with other tools, follow task assignments precisely, " +
-		"and report your results clearly. Focus on the task at hand and " +
-		"produce high-quality, production-ready code."
-	c.info.Args = append([]string{"-p", systemPrompt}, c.info.Args...)
-	c.mu.Unlock()
-
-	return c.BaseAdapter.Start(ctx)
-}
-
 // OnEvent handles incoming events.  Task-assignment events are translated into
 // input prompts for the Claude CLI.
 func (c *ClaudeCodeAdapter) OnEvent(event eventbus.Event) {
 	switch event.Type {
 	case eventbus.EventTaskAssigned:
+		assignedTool, _ := event.Payload["tool"].(string)
+		c.mu.RLock()
+		name := c.info.Name
+		c.mu.RUnlock()
+		if assignedTool != name {
+			return
+		}
+
 		task, _ := event.Payload["task"].(string)
 		details, _ := event.Payload["details"].(string)
 

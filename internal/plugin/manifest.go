@@ -97,6 +97,7 @@ func (m *Manifest) ToToolInfo() adapter.ToolInfo {
 		Command:     m.Command,
 		Args:        m.Args,
 		Priority:    m.Priority,
+		Env:         m.Env,
 	}
 }
 

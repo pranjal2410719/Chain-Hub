@@ -11,10 +11,10 @@ type FreeBufAdapter struct {
 // for the FreeBuff CLI.
 func NewFreeBufAdapter() *FreeBufAdapter {
 	info := ToolInfo{
-		Name:        "freebuf",
+		Name:        "freebuff",
 		DisplayName: "FreeBuff",
 		Specialties: []ToolCapability{CapScanning, CapResearch, CapBrowsing},
-		Command:     "freebuf",
+		Command:     "freebuff",
 		Args:        []string{},
 		Priority:    "medium",
 	}

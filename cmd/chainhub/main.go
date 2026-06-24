@@ -60,6 +60,7 @@ AI assistants collaborate instead of competing.`,
 func init() {
 	rootCmd.PersistentFlags().StringVar(&cfgPath, "config", "./configs/default.yaml", "Path to configuration file")
 	rootCmd.PersistentFlags().BoolVar(&verbose, "verbose", false, "Enable verbose output")
+	runCmd.Flags().BoolVar(&noTUI, "no-tui", false, "Run without TUI (headless mode)")
 
 	rootCmd.AddCommand(initCmd)
 	rootCmd.AddCommand(connectCmd)
@@ -70,6 +71,35 @@ func init() {
 	rootCmd.AddCommand(versionCmd)
 	rootCmd.AddCommand(assignCmd)
 	rootCmd.AddCommand(modeCmd)
+	rootCmd.AddCommand(resumeCmd)
+	rootCmd.AddCommand(sessionsCmd)
+}
+
+// findConfigFile looks for a config file in multiple locations:
+// 1. The specified path (if absolute or exists relative to cwd)
+// 2. Relative to the binary's location
+// 3. Relative to the binary's parent directory (for development)
+func findConfigFile(name string) string {
+	// Check if the specified path exists
+	if _, err := os.Stat(name); err == nil {
+		return name
+	}
+
+	// Get the directory where the binary is located
+	if execPath, err := os.Executable(); err == nil {
+		binDir := filepath.Dir(execPath)
+		candidate := filepath.Join(binDir, name)
+		if _, err := os.Stat(candidate); err == nil {
+			return candidate
+		}
+		// Check parent directory (for development layout)
+		candidate = filepath.Join(binDir, "..", name)
+		if _, err := os.Stat(candidate); err == nil {
+			return candidate
+		}
+	}
+
+	return name // Return original as fallback
 }
 
 func main() {
@@ -113,7 +143,7 @@ var initCmd = &cobra.Command{
 
 		// Write empty tools config.
 		toolsCfg := filepath.Join("configs", "tools.yaml")
-		if err := os.WriteFile(toolsCfg, []byte("# ChainHub connected tools\ntools: []\n"), 0o644); err != nil {
+		if err := os.WriteFile(toolsCfg, []byte("tools: []\n"), 0o644); err != nil {
 			return fmt.Errorf("writing tools config: %w", err)
 		}
 		fmt.Println(cliSuccess.Render("  ✓ ") + cliDim.Render(toolsCfg))
@@ -170,16 +200,32 @@ Supported tools: claude-code, antigravity, mimo-code, opencode, freebuff`,
 
 		// Update tools config.
 		toolsCfg := filepath.Join("configs", "tools.yaml")
-		entry := fmt.Sprintf("\n  - name: %s\n    command: %s\n    enabled: true\n", name, binary)
-
-		f, err := os.OpenFile(toolsCfg, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
+		cfg, err := loadToolsConfig(toolsCfg)
 		if err != nil {
-			return fmt.Errorf("updating tools config: %w", err)
+			cfg = &ToolsConfig{Tools: []ToolConfigEntry{}}
 		}
-		defer f.Close()
 
-		if _, err := f.WriteString(entry); err != nil {
-			return fmt.Errorf("writing tool entry: %w", err)
+		exists := false
+		for _, t := range cfg.Tools {
+			if t.Name == name {
+				exists = true
+				break
+			}
+		}
+
+		if exists {
+			fmt.Println(cliInfo.Render("\nℹ ") + name + " is already connected")
+			return nil
+		}
+
+		cfg.Tools = append(cfg.Tools, ToolConfigEntry{
+			Name:    name,
+			Command: binary,
+			Enabled: true,
+		})
+
+		if err := saveToolsConfig(cfg, toolsCfg); err != nil {
+			return fmt.Errorf("saving tools config: %w", err)
 		}
 
 		fmt.Println(cliSuccess.Render("\n✅ " + name + " connected successfully!"))
@@ -197,6 +243,8 @@ func knownToolNames() []string {
 
 // ─── run Command ────────────────────────────────────────────────────────────
 
+var noTUI bool
+
 var runCmd = &cobra.Command{
 	Use:   `run "<problem statement>"`,
 	Short: "Submit a problem and launch the pipeline + TUI",
@@ -213,6 +261,7 @@ var runCmd = &cobra.Command{
 			fmt.Println(cliDim.Render("  (config not found, using defaults)"))
 			cfg = core.DefaultConfig()
 		}
+		os.Setenv("CHAINHUB_WORKSPACE", cfg.ChainHub.Workspace)
 
 		if err := core.EnsureWorkspace(cfg); err != nil {
 			return fmt.Errorf("ensuring workspace: %w", err)
@@ -243,7 +292,7 @@ var runCmd = &cobra.Command{
 		engine.SetRegistry(registry)
 
 		// Load tools from configs/tools.yaml if exists.
-		toolsCfgPath := filepath.Join("configs", "tools.yaml")
+		toolsCfgPath := findConfigFile(filepath.Join("configs", "tools.yaml"))
 		if toolsData, err := os.ReadFile(toolsCfgPath); err == nil {
 			var toolsList struct {
 				Tools []struct {
@@ -348,6 +397,11 @@ var runCmd = &cobra.Command{
 				pipeline.ID, len(pipeline.Phases))
 		}
 
+		// Save session for recovery.
+		if err := pipeline.Save(cfg.ChainHub.Workspace); err != nil && verbose {
+			fmt.Println(cliDim.Render("  session save: " + err.Error()))
+		}
+
 		// System monitor.
 		mon := monitor.NewSystemMonitor(
 			2*time.Second,
@@ -359,11 +413,20 @@ var runCmd = &cobra.Command{
 		}
 		defer mon.Stop()
 
-		// Launch TUI.
-		app := tui.NewApp(engine, registry, mon)
-		p := tea.NewProgram(app, tea.WithAltScreen())
-		if _, err := p.Run(); err != nil {
-			return fmt.Errorf("TUI error: %w", err)
+		// Launch TUI or run headless.
+		if noTUI {
+			fmt.Println(cliInfo.Render("\n  Running in headless mode (no TUI)"))
+			fmt.Println(cliDim.Render("  Pipeline will run in background..."))
+
+			// Wait for context cancellation or pipeline completion.
+			<-ctx.Done()
+			fmt.Println(cliDim.Render("  Pipeline stopped."))
+		} else {
+			app := tui.NewApp(engine, registry, mon)
+			p := tea.NewProgram(app, tea.WithAltScreen())
+			if _, err := p.Run(); err != nil {
+				return fmt.Errorf("TUI error: %w", err)
+			}
 		}
 
 		fmt.Println(cliSuccess.Render("\n✅ Pipeline finished. Goodbye!"))
@@ -383,6 +446,7 @@ var statusCmd = &cobra.Command{
 		if err != nil {
 			cfg = core.DefaultConfig()
 		}
+		os.Setenv("CHAINHUB_WORKSPACE", cfg.ChainHub.Workspace)
 
 		bus := eventbus.NewEventBus()
 		engine := core.NewEngine(cfg, bus)
@@ -418,6 +482,32 @@ var statusCmd = &cobra.Command{
 			metrics.MemoryPercent, metrics.MemoryUsedMB, metrics.MemoryTotalMB)
 		fmt.Printf("    Disk:   %.1f%% (%.1f/%.1f GB)\n",
 			metrics.DiskPercent, metrics.DiskUsedGB, metrics.DiskTotalGB)
+
+		// Connected tools.
+		toolsCfgPath := filepath.Join("configs", "tools.yaml")
+		if toolsData, err := os.ReadFile(toolsCfgPath); err == nil {
+			var toolsList struct {
+				Tools []struct {
+					Name    string `yaml:"name"`
+					Command string `yaml:"command"`
+					Enabled bool   `yaml:"enabled"`
+				} `yaml:"tools"`
+			}
+			if err := yaml.Unmarshal(toolsData, &toolsList); err == nil && len(toolsList.Tools) > 0 {
+				fmt.Println(cliInfo.Render("\n  Connected Tools:"))
+				for _, t := range toolsList.Tools {
+					if !t.Enabled {
+						continue
+					}
+					_, err := exec.LookPath(t.Command)
+					status := cliSuccess.Render("active")
+					if err != nil {
+						status = cliDim.Render("binary missing")
+					}
+					fmt.Printf("    %-18s %s\n", t.Name, status)
+				}
+			}
+		}
 
 		fmt.Println()
 		return nil
@@ -496,6 +586,7 @@ var pipelineShowCmd = &cobra.Command{
 		if err != nil {
 			cfg = core.DefaultConfig()
 		}
+		os.Setenv("CHAINHUB_WORKSPACE", cfg.ChainHub.Workspace)
 
 		bus := eventbus.NewEventBus()
 		engine := core.NewEngine(cfg, bus)
@@ -623,6 +714,7 @@ Supported phases: planning, research, implementation, scanning, testing`,
 			fmt.Println(cliDim.Render("  (config not found, initializing with defaults)"))
 			cfg = core.DefaultConfig()
 		}
+		os.Setenv("CHAINHUB_WORKSPACE", cfg.ChainHub.Workspace)
 
 		// Update config.
 		cfg.ChainHub.Pipeline.Mode = "manual"
@@ -662,6 +754,7 @@ var modeCmd = &cobra.Command{
 		if err != nil {
 			cfg = core.DefaultConfig()
 		}
+		os.Setenv("CHAINHUB_WORKSPACE", cfg.ChainHub.Workspace)
 
 		cfg.ChainHub.Pipeline.Mode = mode
 		if err := core.SaveConfig(cfg, cfgPath); err != nil {
@@ -671,4 +764,289 @@ var modeCmd = &cobra.Command{
 		fmt.Printf("\n✅ Orchestration mode switched to %s!\n\n", cliTitle.Render(mode))
 		return nil
 	},
+}
+
+// ─── resume Command ─────────────────────────────────────────────────────────
+
+var resumeCmd = &cobra.Command{
+	Use:   "resume",
+	Short: "Resume the last interrupted pipeline session",
+	RunE: func(cmd *cobra.Command, args []string) error {
+		fmt.Println(cliTitle.Render("\n🔗 ChainHub — Resuming Session"))
+
+		// Load config.
+		cfg, err := core.LoadConfig(cfgPath)
+		if err != nil {
+			cfg = core.DefaultConfig()
+		}
+		os.Setenv("CHAINHUB_WORKSPACE", cfg.ChainHub.Workspace)
+
+		// Load latest session.
+		pipeline, err := core.LoadLatestPipeline(cfg.ChainHub.Workspace)
+		if err != nil {
+			fmt.Println(cliError.Render("  ✗ No session found to resume"))
+			fmt.Println(cliDim.Render("  Run `chainhub run` to start a new pipeline"))
+			return nil
+		}
+
+		fmt.Printf("%s Resuming pipeline: %s\n",
+			cliInfo.Render("  →"),
+			cliTitle.Render(pipeline.Problem),
+		)
+		fmt.Printf("%s Status: %s | Progress: %.0f%%\n",
+			cliInfo.Render("  →"),
+			pipeline.Status,
+			pipeline.Progress()*100,
+		)
+
+		// Find the current active phase
+		currentPhase := pipeline.CurrentPhaseConfig()
+		if currentPhase != nil {
+			fmt.Printf("%s Current phase: %s\n",
+				cliInfo.Render("  →"),
+				cliTitle.Render(string(currentPhase.Phase)),
+			)
+		}
+
+		fmt.Println()
+
+		// Create event bus and engine.
+		bus := eventbus.NewEventBus()
+		bus.Start()
+		defer bus.Stop()
+
+		engine := core.NewEngine(cfg, bus)
+		engine.SetPipeline(pipeline)
+
+		// Context for cancellation.
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+
+		// Signal handling.
+		sigCh := make(chan os.Signal, 1)
+		signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
+		go func() {
+			<-sigCh
+			cancel()
+		}()
+
+		// Registry — load plugins and register adapters.
+		registry := adapter.NewRegistry()
+		engine.SetRegistry(registry)
+
+		// Load tools from configs/tools.yaml.
+		toolsCfgPath := findConfigFile(filepath.Join("configs", "tools.yaml"))
+		if toolsData, err := os.ReadFile(toolsCfgPath); err == nil {
+			var toolsList struct {
+				Tools []struct {
+					Name        string   `yaml:"name"`
+					DisplayName string   `yaml:"display_name"`
+					Command     string   `yaml:"command"`
+					Args        []string `yaml:"args"`
+					Specialties []string `yaml:"specialties"`
+					Priority    string   `yaml:"priority"`
+					Enabled     bool     `yaml:"enabled"`
+				} `yaml:"tools"`
+			}
+			if err := yaml.Unmarshal(toolsData, &toolsList); err == nil {
+				specialtyMap := map[string]adapter.ToolCapability{
+					"planning":       adapter.CapPlanning,
+					"coding":         adapter.CapCoding,
+					"implementation": adapter.CapCoding,
+					"scanning":       adapter.CapScanning,
+					"security":       adapter.CapScanning,
+					"testing":        adapter.CapTesting,
+					"research":       adapter.CapResearch,
+					"debugging":      adapter.CapDebugging,
+					"review":         adapter.CapReview,
+					"refactoring":    adapter.CapRefactoring,
+					"browsing":       adapter.CapBrowsing,
+				}
+
+				for _, t := range toolsList.Tools {
+					if !t.Enabled {
+						continue
+					}
+					var a adapter.ToolAdapter
+					switch t.Name {
+					case "claude-code":
+						a = adapter.NewClaudeCodeAdapter()
+					case "antigravity":
+						a = adapter.NewAntigravityAdapter()
+					case "mimo-code":
+						a = adapter.NewMimoCodeAdapter()
+					case "opencode":
+						a = adapter.NewOpenCodeAdapter()
+					case "freebuff":
+						a = adapter.NewFreeBufAdapter()
+					default:
+						info := adapter.ToolInfo{
+							Name:        t.Name,
+							DisplayName: t.DisplayName,
+							Command:     t.Command,
+							Args:        t.Args,
+							Priority:    t.Priority,
+						}
+						for _, spec := range t.Specialties {
+							if cap, ok := specialtyMap[spec]; ok {
+								info.Specialties = append(info.Specialties, cap)
+							}
+						}
+						a = adapter.NewGenericAdapter(info)
+					}
+					_ = registry.Register(a)
+				}
+			}
+		}
+
+		// Connect all adapters to the event bus.
+		for _, a := range registry.List() {
+			a.SetEventBus(bus)
+		}
+
+		// Start engine and registry.
+		if err := engine.Start(ctx); err != nil {
+			return fmt.Errorf("starting engine: %w", err)
+		}
+		defer func() { _ = engine.Stop() }()
+
+		if err := registry.StartAll(ctx); err != nil && verbose {
+			fmt.Println(cliDim.Render("  registry start: " + err.Error()))
+		}
+		defer func() { _ = registry.StopAll() }()
+
+		// System monitor.
+		mon := monitor.NewSystemMonitor(
+			2*time.Second,
+			bus,
+			monitor.AlertThresholds{CPUPercent: 90, MemoryPercent: 90, DiskPercent: 95},
+		)
+		if err := mon.Start(ctx); err != nil && verbose {
+			fmt.Println(cliDim.Render("  monitor start: " + err.Error()))
+		}
+		defer mon.Stop()
+
+		// Launch TUI or run headless.
+		if noTUI {
+			fmt.Println(cliInfo.Render("\n  Running in headless mode (no TUI)"))
+			fmt.Println(cliDim.Render("  Pipeline will run in background..."))
+
+			// Wait for context cancellation or pipeline completion.
+			<-ctx.Done()
+			fmt.Println(cliDim.Render("  Pipeline stopped."))
+		} else {
+			app := tui.NewApp(engine, registry, mon)
+			p := tea.NewProgram(app, tea.WithAltScreen())
+			if _, err := p.Run(); err != nil {
+				return fmt.Errorf("TUI error: %w", err)
+			}
+		}
+
+		fmt.Println(cliSuccess.Render("\n✅ Pipeline finished. Goodbye!"))
+		return nil
+	},
+}
+
+// ─── sessions Command ───────────────────────────────────────────────────────
+
+var sessionsCmd = &cobra.Command{
+	Use:   "sessions",
+	Short: "List saved pipeline sessions",
+	RunE: func(cmd *cobra.Command, args []string) error {
+		fmt.Println(cliTitle.Render("\n📋 Saved Sessions"))
+
+		// Load config.
+		cfg, err := core.LoadConfig(cfgPath)
+		if err != nil {
+			cfg = core.DefaultConfig()
+		}
+
+		sessions, err := core.ListSessions(cfg.ChainHub.Workspace)
+		if err != nil {
+			return fmt.Errorf("listing sessions: %w", err)
+		}
+
+		if len(sessions) == 0 {
+			fmt.Println(cliDim.Render("  No sessions found"))
+			fmt.Println(cliDim.Render("  Run `chainhub run` to create a new session"))
+			return nil
+		}
+
+		for i, s := range sessions {
+			status := cliSuccess.Render(string(s.Status))
+			if s.Status == core.PipelineStatusFailed {
+				status = cliError.Render(string(s.Status))
+			} else if s.Status == core.PipelineStatusRunning {
+				status = cliInfo.Render(string(s.Status))
+			}
+
+			prob := s.Problem
+			if len(prob) > 50 {
+				prob = prob[:47] + "..."
+			}
+
+			fmt.Printf("  %d. %s %s (%.0f%%)\n",
+				i+1,
+				status,
+				cliTitle.Render(prob),
+				s.Progress()*100,
+			)
+			fmt.Printf("     ID: %s | Phases: %d/%d completed\n",
+				cliDim.Render(s.ID[:8]),
+				countCompleted(s),
+				len(s.Phases),
+			)
+		}
+
+		fmt.Println()
+		fmt.Println(cliInfo.Render("  Use `chainhub resume` to continue the last session"))
+		return nil
+	},
+}
+
+func countCompleted(p core.Pipeline) int {
+	count := 0
+	for _, phase := range p.Phases {
+		if phase.Status == core.PhaseStatusCompleted {
+			count++
+		}
+	}
+	return count
+}
+
+type ToolConfigEntry struct {
+	Name        string   `yaml:"name"`
+	DisplayName string   `yaml:"display_name,omitempty"`
+	Command     string   `yaml:"command"`
+	Args        []string `yaml:"args,omitempty"`
+	Specialties []string `yaml:"specialties,omitempty"`
+	Priority    string   `yaml:"priority,omitempty"`
+	Enabled     bool     `yaml:"enabled"`
+}
+
+type ToolsConfig struct {
+	Tools []ToolConfigEntry `yaml:"tools"`
+}
+
+func loadToolsConfig(path string) (*ToolsConfig, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return &ToolsConfig{Tools: []ToolConfigEntry{}}, nil
+		}
+		return nil, err
+	}
+	var cfg ToolsConfig
+	if err := yaml.Unmarshal(data, &cfg); err != nil {
+		return &ToolsConfig{Tools: []ToolConfigEntry{}}, nil
+	}
+	return &cfg, nil
+}
+
+func saveToolsConfig(cfg *ToolsConfig, path string) error {
+	data, err := yaml.Marshal(cfg)
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(path, data, 0644)
 }

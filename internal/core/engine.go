@@ -4,12 +4,14 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"path/filepath"
 	"sync"
 	"time"
 
 	"github.com/rs/zerolog"
 
 	"github.com/khurafati/chainhub/internal/adapter"
+	sharedctx "github.com/khurafati/chainhub/internal/context"
 	"github.com/khurafati/chainhub/internal/eventbus"
 )
 
@@ -18,15 +20,17 @@ import (
 // with the system through the Engine's public API, while internal coordination
 // happens via events published on the bus.
 type Engine struct {
-	config   *Config
-	bus      *eventbus.EventBus
-	registry *adapter.Registry
-	pipeline *Pipeline
-	mu       sync.RWMutex
-	ctx      context.Context
-	cancel   context.CancelFunc
-	logger   zerolog.Logger
-	running  bool
+	config    *Config
+	bus       *eventbus.EventBus
+	registry  *adapter.Registry
+	pipeline  *Pipeline
+	mu        sync.RWMutex
+	ctx       context.Context
+	cancel    context.CancelFunc
+	logger    zerolog.Logger
+	running   bool
+	sharedCtx *sharedctx.SharedContext
+	logFile   *os.File
 }
 
 // NewEngine creates an Engine bound to the given configuration and event bus.
@@ -44,10 +48,19 @@ func NewEngine(cfg *Config, bus *eventbus.EventBus) *Engine {
 		Logger().
 		Level(level)
 
+	var sCtx *sharedctx.SharedContext
+	if cfg != nil {
+		sCtx, err = sharedctx.NewSharedContext(cfg.ChainHub.Workspace, bus)
+		if err != nil {
+			logger.Error().Err(err).Msg("failed to initialize shared context")
+		}
+	}
+
 	return &Engine{
-		config: cfg,
-		bus:    bus,
-		logger: logger,
+		config:    cfg,
+		bus:       bus,
+		logger:    logger,
+		sharedCtx: sCtx,
 	}
 }
 
@@ -67,6 +80,24 @@ func (e *Engine) Start(ctx context.Context) error {
 
 	if e.running {
 		return fmt.Errorf("engine is already running")
+	}
+
+	// Set up file logging if workspace is configured.
+	if e.config != nil && e.config.ChainHub.Workspace != "" {
+		logDir := filepath.Join(e.config.ChainHub.Workspace, "logs")
+		if err := os.MkdirAll(logDir, 0755); err == nil {
+			logFilePath := filepath.Join(logDir, "engine.log")
+			if f, err := os.OpenFile(logFilePath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644); err == nil {
+				e.logFile = f
+				level, _ := zerolog.ParseLevel(e.config.ChainHub.LogLevel)
+				e.logger = zerolog.New(f).
+					With().
+					Timestamp().
+					Str("component", "engine").
+					Logger().
+					Level(level)
+			}
+		}
 	}
 
 	e.ctx, e.cancel = context.WithCancel(ctx)
@@ -95,7 +126,20 @@ func (e *Engine) Stop() error {
 	e.running = false
 
 	e.logger.Info().Msg("engine stopped")
+
+	if e.logFile != nil {
+		_ = e.logFile.Close()
+		e.logFile = nil
+	}
+
 	return nil
+}
+
+// SharedContext returns the shared context for the engine.
+func (e *Engine) SharedContext() *sharedctx.SharedContext {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+	return e.sharedCtx
 }
 
 // SubmitProblem creates a new default Pipeline for the given problem statement,
@@ -145,6 +189,13 @@ func (e *Engine) GetPipeline() *Pipeline {
 	return e.pipeline
 }
 
+// SetPipeline restores a pipeline from a saved session.
+func (e *Engine) SetPipeline(p *Pipeline) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.pipeline = p
+}
+
 // AdvancePipeline moves the active pipeline to its next phase and publishes a
 // PipelinePhaseChanged event. Returns an error if no pipeline is active or
 // the pipeline is already complete.
@@ -171,6 +222,11 @@ func (e *Engine) AdvancePipeline() error {
 		Str("phase", phaseName).
 		Float64("progress", e.pipeline.Progress()).
 		Msg("pipeline advanced")
+
+	// Auto-save session for recovery.
+	if e.config != nil && e.config.ChainHub.Workspace != "" {
+		_ = e.pipeline.Save(e.config.ChainHub.Workspace)
+	}
 
 	e.bus.Publish(eventbus.NewEvent(
 		eventbus.EventPipelinePhaseChanged,

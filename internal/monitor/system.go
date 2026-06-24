@@ -45,14 +45,16 @@ type AlertThresholds struct {
 // SystemMonitor collects host resource metrics at a configurable interval and
 // publishes EventSystemAlert events when any threshold is exceeded.
 type SystemMonitor struct {
-	metrics   SystemMetrics
-	mu        sync.RWMutex
-	interval  time.Duration
-	bus       *eventbus.EventBus
-	ctx       context.Context
-	cancel    context.CancelFunc
-	alerts    AlertThresholds
-	metricsCh chan SystemMetrics
+	metrics      SystemMetrics
+	mu           sync.RWMutex
+	interval     time.Duration
+	bus          *eventbus.EventBus
+	ctx          context.Context
+	cancel       context.CancelFunc
+	alerts       AlertThresholds
+	metricsCh    chan SystemMetrics
+	lastAlertAt  time.Time
+	alertCooldown time.Duration
 }
 
 // NewSystemMonitor creates a SystemMonitor that collects metrics at the given
@@ -60,10 +62,11 @@ type SystemMonitor struct {
 // exceeded.
 func NewSystemMonitor(interval time.Duration, bus *eventbus.EventBus, thresholds AlertThresholds) *SystemMonitor {
 	return &SystemMonitor{
-		interval:  interval,
-		bus:       bus,
-		alerts:    thresholds,
-		metricsCh: make(chan SystemMetrics, 16),
+		interval:      interval,
+		bus:           bus,
+		alerts:        thresholds,
+		metricsCh:     make(chan SystemMetrics, 16),
+		alertCooldown: 60 * time.Second,
 	}
 }
 
@@ -165,8 +168,17 @@ func (m *SystemMonitor) collect() {
 	}
 }
 
-// checkAlerts publishes EventSystemAlert for every breached threshold.
+// checkAlerts publishes EventSystemAlert for every breached threshold,
+// with a cooldown to avoid spamming the same alert.
 func (m *SystemMonitor) checkAlerts(bus *eventbus.EventBus, metrics SystemMetrics, thresholds AlertThresholds) {
+	// Check cooldown
+	now := time.Now()
+	if now.Sub(m.lastAlertAt) < m.alertCooldown {
+		return
+	}
+
+	fired := false
+
 	if thresholds.CPUPercent > 0 && metrics.CPUPercent > thresholds.CPUPercent {
 		bus.Publish(eventbus.NewEvent(
 			eventbus.EventSystemAlert,
@@ -178,6 +190,7 @@ func (m *SystemMonitor) checkAlerts(bus *eventbus.EventBus, metrics SystemMetric
 				"message":   fmt.Sprintf("CPU usage %.1f%% exceeds threshold %.1f%%", metrics.CPUPercent, thresholds.CPUPercent),
 			},
 		))
+		fired = true
 	}
 
 	if thresholds.MemoryPercent > 0 && metrics.MemoryPercent > thresholds.MemoryPercent {
@@ -191,6 +204,7 @@ func (m *SystemMonitor) checkAlerts(bus *eventbus.EventBus, metrics SystemMetric
 				"message":   fmt.Sprintf("Memory usage %.1f%% exceeds threshold %.1f%%", metrics.MemoryPercent, thresholds.MemoryPercent),
 			},
 		))
+		fired = true
 	}
 
 	if thresholds.DiskPercent > 0 && metrics.DiskPercent > thresholds.DiskPercent {
@@ -204,5 +218,10 @@ func (m *SystemMonitor) checkAlerts(bus *eventbus.EventBus, metrics SystemMetric
 				"message":   fmt.Sprintf("Disk usage %.1f%% exceeds threshold %.1f%%", metrics.DiskPercent, thresholds.DiskPercent),
 			},
 		))
+		fired = true
+	}
+
+	if fired {
+		m.lastAlertAt = now
 	}
 }
